@@ -836,7 +836,7 @@ from
         else 'NO' end as temp
 from cte
 where date(current) >= '2005-05-24' and date(current) <= '2005-05-31') S
-where temp = 'YES'
+where temp = 'YES';
 
 
 -- q70 cumulative spend
@@ -962,8 +962,120 @@ from (
     select category_id, customer_id,
             row_number() over (partition by category_id order by revenue desc) as row_num
     from cust_revenue_by_cat) S
-where row_num = 1
+where row_num = 1;
 
 
--- q76
+-- q76 districts with the most and least customers
+with cte as
+(select district, count(*) count
+from customer c inner join address a on c.address_id = a.address_id
+group by district)
 
+(select district, 'most' as cat
+from cte
+order by count desc
+limit 1)
+union
+(select district, 'least' as cat
+from cte
+order by count
+limit 1);
+
+
+-- q77 movie revenue percentiles by category
+WITH movie_rev_by_cat AS (
+    SELECT
+    F.film_id,
+    MAX(FC.category_id) AS category_id,
+    SUM(P.amount) AS revenue
+    FROM film F
+    INNER JOIN inventory I
+    ON I.film_id = F.film_id
+    INNER JOIN rental R
+    ON R.inventory_id = I.inventory_id
+    INNER JOIN payment P
+    ON P.rental_id = R.rental_id
+    INNER JOIN film_category FC
+    ON FC.film_id = F.film_id
+    GROUP BY F.film_id
+)
+select * from (
+select film_id,
+    ntile(100) over(partition by category_id order by revenue) perc_by_cat
+from movie_rev_by_cat) S
+where film_id in (1,2,3,4,5);
+
+
+-- q78 quartile buckets by number of rentals
+WITH cust_rentals AS (
+    SELECT C.customer_id,
+    MAX(C.store_id) AS store_id, -- one customer can only belong to one store
+    COUNT(*) AS num_rentals FROM
+    rental R
+    INNER JOIN customer C
+    ON C.customer_id = R.customer_id
+    GROUP BY C.customer_id
+)
+select * from (
+select customer_id, store_id,
+       ntile(4) over(partition by store_id order by num_rentals) quartile
+from cust_rentals) S
+where customer_id in (1,2,3,4,5,6,7,8,9,10);
+
+
+-- q79 spend difference between the last and the second last rentals
+with cte as
+(
+    select customer_id, amount,
+       row_number() over (partition by customer_id order by payment_date desc) row_num
+from payment )
+select customer_id, last-second_last as delta
+from (
+select customer_id,
+       MAX(CASE WHEN row_num = 1 THEN amount END) as last,
+       MAX(CASE WHEN row_num = 2 THEN amount END) as second_last
+from cte
+group by customer_id) S
+where second_last is NOT NULL and
+customer_id in (1,2,3,4,5,6,7,8,9,10);
+-- text book solution
+WITH cust_spend_seq AS (
+SELECT
+ customer_id,
+ payment_date,
+ amount AS current_payment,
+ LAG(amount, 1) OVER(PARTITION BY customer_id ORDER BY payment_date) AS
+prev_payment,
+ ROW_NUMBER() OVER(PARTITION BY customer_id ORDER BY payment_date DESC)
+AS payment_idx
+FROM payment P
+)
+SELECT
+ customer_id,
+ current_payment - prev_payment AS delta
+FROM cust_spend_seq
+WHERE customer_id IN(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+AND payment_idx = 1;
+
+
+-- q80 DoD revenue growth for each store
+WITH store_daily_rev AS (
+ SELECT
+ I.store_id,
+ DATE(P.payment_date) date,
+ SUM(amount) AS daily_rev
+ FROM
+ payment P
+ INNER JOIN rental R
+ ON R.rental_id = P.rental_id
+ INNER JOIN inventory I
+ ON I.inventory_id = R.inventory_id
+ WHERE DATE(P.payment_date) >= '2007-04-27'
+ AND DATE(P.payment_date) <= '2007-04-30'
+ GROUP BY I.store_id, DATE(P.payment_date)
+)
+select store_id, date,
+       lag(daily_rev, 1) over(partition by store_id order by date) prev,
+       daily_rev current,
+       ROUND((daily_rev / lag(daily_rev, 1) over(partition by store_id order by date) - 1) * 100) dod_growth
+from store_daily_rev;
